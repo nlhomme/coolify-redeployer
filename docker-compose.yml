@@ -1,0 +1,47 @@
+services:
+  cronjob:
+    image: alpine:3.24
+    container_name: coolify-redeploy-cron
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        [ -n "$$TOKEN" ] && [ -n "$$UUIDS" ] || { echo "TOKEN and UUIDS are required" >&2; exit 1; }
+        case "$$UUIDS" in *[!A-Za-z0-9\ ]*) echo "UUIDS must be space-separated UUIDs (letters/digits only)" >&2; exit 1;; esac
+        set -f; set -- $$CRON_SCHEDULE; set +f; [ $$# -eq 5 ] || { echo "CRON_SCHEDULE must have 5 fields, got $$# (check it on https://crontab.guru)" >&2; exit 1; }
+        apk add --no-cache curl tzdata >/dev/null
+        umask 077
+        printf '%s' "$$TOKEN" > /etc/redeploy.token
+        printf '%s' "$$UUIDS" > /etc/redeploy.uuids
+        cat > /tmp/redeploy.sh <<'EOF'
+        #!/bin/sh
+        TOKEN=$$(cat /etc/redeploy.token)
+        URL="http://coolify:8080/api/v1/deploy"
+        for UUID in $$(cat /etc/redeploy.uuids); do
+          CODE=$$(curl -s --connect-timeout 10 --max-time 60 -o /tmp/redeploy.body -w "%{http_code}" --request POST "$$URL" \
+            --header "Authorization: Bearer $$TOKEN" \
+            --header "Content-Type: application/json" \
+            --data "{\"uuid\":\"$$UUID\",\"force\":false}") || CODE=000
+          BODY=$$(head -c 300 /tmp/redeploy.body 2>/dev/null); rm -f /tmp/redeploy.body
+          if [ "$$CODE" = "200" ]; then
+            echo "OK: deployment queued for $$UUID: $$BODY"
+          else
+            echo "FAILED: deployment could not be queued for $$UUID (HTTP $$CODE): $$BODY"
+          fi
+        done
+        EOF
+        chmod +x /tmp/redeploy.sh
+        echo "$$CRON_SCHEDULE /tmp/redeploy.sh >> /proc/1/fd/1 2>&1" > /etc/crontabs/root
+        exec crond -f -l 8 -L /dev/stdout
+    environment:
+      - TZ=Europe/Paris
+      - TOKEN=${TOKEN}
+      - UUIDS=${UUIDS}
+      - "CRON_SCHEDULE=${CRON_SCHEDULE:-0 0 * * *}"
+    healthcheck:
+      test: ["CMD-SHELL", "command -v curl >/dev/null && curl -sf --max-time 10 -o /dev/null -H \"Authorization: Bearer $$(cat /etc/redeploy.token)\" http://coolify:8080/api/v1/version"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
