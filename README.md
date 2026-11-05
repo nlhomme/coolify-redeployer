@@ -16,6 +16,16 @@ This service does it for me: on a schedule it asks Coolify to redeploy a list of
 
 It is not a rollout tool: it queues a normal deployment for each resource and does not wait for the result or check that the app came back up.
 
+### Why not Watchtower?
+
+[Watchtower](https://github.com/containrrr/watchtower) also updates containers when their image changes, but:
+
+- **The original project is archived.** `containrrr/watchtower` was archived in December 2025 (last release v1.7.1): it still runs, but gets no more patches. Community forks exist (e.g. `nickfedor/watchtower`); I have not evaluated them.
+- **It works behind Coolify's back.** Watchtower recreates containers directly through the Docker socket. Coolify's own docs say nothing about running it alongside Watchtower, so whether Coolify then shows stale state or reverts the change at its next deployment is untested here. This service goes through Coolify's API, so Coolify stays the source of truth.
+- **It needs the Docker socket.** Mounting `/var/run/docker.sock` gives a container full control of the host's Docker. This one only needs a Coolify API token limited to `deploy` and `read`.
+
+The trade-off: Watchtower redeploys only when an image changed, while this service queues a deployment for every listed resource on every run, whether or not anything changed.
+
 ## Setup
 
 1. In Coolify **Settings** (Advanced), enable **API Access** (it is off by default; if you restrict **Allowed IPs**, include the Docker network the container runs in). Then create an API token (**Keys & Tokens → API tokens**) with the **deploy** and **read** abilities. The job needs `deploy`; the healthcheck needs `read` (for `GET /api/v1/version`), which also confirms the token is valid. `write` and `delete` are not needed.
